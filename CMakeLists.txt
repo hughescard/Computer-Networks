@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.16)
+project(linkchat CXX)
+set(CMAKE_CXX_STANDARD 20)
+file(GLOB SRC CONFIGURE_DEPENDS src/*.cpp src/util/*.cpp)
+add_executable(linkchat ${SRC})

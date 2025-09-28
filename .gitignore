@@ -1,9 +1,21 @@
-build
+# build artifacts
+build/
 *.o
 *.obj
-*.exe
 *.out
-CMakeFiles
+*.exe
+
+# cmake
+CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 compile_commands.json
+
+# local/editor
+.vscode/
+
+# binaries
+linkchat
+
+# docs not for repo (adjust if you DO want to track it)
+Link-chat — Plan De Proyecto (capa De Enlace) — C++.pdf
