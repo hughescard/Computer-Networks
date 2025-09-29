@@ -1,9 +1,8 @@
 #pragma once
-#include <cstdint>
-
-using namespace std;
+#include <cstdint> 
+#include <cstddef> 
 
 namespace linkchat
 {
-    inline uint32_t crc32_stub(const unsigned char *, int) { return 0; }
+    uint32_t crc32(const uint8_t *data, size_t len);
 }
