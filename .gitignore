@@ -19,3 +19,8 @@ linkchat
 
 # docs not for repo (adjust if you DO want to track it)
 Link-chat — Plan De Proyecto (capa De Enlace) — C++.pdf
+
+# test binaries
+/test_crc
+src/tests/test_crc
+
