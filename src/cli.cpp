@@ -11,6 +11,7 @@ namespace linkchat
                      "  recv | send <MAC> <text> | sendfile <MAC> <path>\n"
                      "  scan | broadcast <msg> | help\n";
     }
+    
     int run_cli(const vector<string> &args)
     {
         if (args.empty() || args[0] == "help")

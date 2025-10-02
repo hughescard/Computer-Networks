@@ -2,7 +2,6 @@
 #include <optional>
 #include <string>
 
-using namespace std;
 
 namespace linkchat
 {
@@ -10,5 +9,5 @@ namespace linkchat
     {
         string name;
     };
-    optional<NetIf> pick_default_iface(); // D2
+    std:: optional<NetIf> pick_default_iface();
 }
