@@ -24,3 +24,7 @@ Link-chat — Plan De Proyecto (capa De Enlace) — C++.pdf
 /test_crc
 src/tests/test_crc
 
+
+# local-only tests
+src/tests/
+test_*
