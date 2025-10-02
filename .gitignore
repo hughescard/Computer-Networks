@@ -32,3 +32,22 @@ test_*
 # local-only tests
 src/tests/
 test_*
+
+# local planning doc
+/Link-chat — Plan De Proyecto (capa De Enlace) — C++.pdf
+
+# local planning doc
+/Link-chat — Plan De Proyecto (capa De Enlace) — C++.pdf
+
+# local planning PDF (root)
+/*.pdf
+
+# local-only tests
+src/tests/
+test_*
+
+# local build artefacts
+/build/
+*.o
+*.obj
+*.exe
