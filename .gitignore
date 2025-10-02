@@ -28,3 +28,7 @@ src/tests/test_crc
 # local-only tests
 src/tests/
 test_*
+
+# local-only tests
+src/tests/
+test_*
