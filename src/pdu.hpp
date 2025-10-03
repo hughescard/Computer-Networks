@@ -2,9 +2,12 @@
 #include <cstdint>
 #include <cstddef>
 #include <vector>
-#include "frame.hpp"
+#include "header.hpp"
 
 namespace linkchat {
+
+inline constexpr size_t kHeaderSize = 15;
+inline constexpr size_t kCrcSize = 4;
 
 // [Header(15)] [Payload(P)] [CRC32(4, BE)]
 size_t build_pdu(const Header& h,
