@@ -7,7 +7,7 @@ namespace linkchat
 {
     struct NetIf
     {
-        string name;
+        std::string name;
     };
     std:: optional<NetIf> pick_default_iface();
 }

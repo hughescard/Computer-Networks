@@ -1,11 +1,12 @@
 #include "header.hpp"
 #include "util/helpers.hpp"
+#include "util/structs.hpp"
 
 using namespace std;
 
 namespace linkchat
 {
-    size_t serialize_header(const Header & h, uint8_t * buf, size_t buf_size)
+    size_t serialize_header(const Header & h, uint8_t * buf, size_t buf_size)noexcept
     {
         if(buf_size < 15 || buf == nullptr)
             return 0;
@@ -26,7 +27,7 @@ namespace linkchat
         return 15 ;
     }
 
-    bool parse_header(const uint8_t * buf, size_t buf_size, Header & out)
+    bool parse_header(const uint8_t * buf, size_t buf_size, Header & out)noexcept
     {
         if(buf == nullptr || buf_size < 15)
             return false;
