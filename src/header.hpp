@@ -11,7 +11,7 @@ namespace linkchat
     #pragma pack(push, 1)
         struct Header
         {
-            Type type;            // message type
+            Type type;                  // message type
             std::uint32_t msg_id;      // message identifier
             std::uint32_t seq;         // sequence number
             std::uint32_t total;       // total frames in message

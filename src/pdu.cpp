@@ -36,25 +36,25 @@ namespace linkchat
                    Header & out_h,
                    vector<uint8_t> & out_payload) noexcept
     {
-        if(buf == nullptr || buf_size < 19 /*header_size+crc_size*/)
+        if(buf == nullptr || buf_size < kHeaderSize+kCrcSize)
             return false;
 
-        if(!parse_header(buf, 15, out_h))return false;
+        if(!parse_header(buf, buf_size, out_h)) return false;
 
-        uint8_t header_paylen = out_h.payload_len;
-        uint8_t real_paylen = buf_size - 19;//total_size - header_size - crc_size (header_size - crc_size = 19)
+        if(buf_size < kHeaderSize + kCrcSize) return false;
+
+        const size_t real_paylen = buf_size - (kHeaderSize + kCrcSize);
         
-        if(header_paylen != real_paylen)
-            return false;
-
-        uint32_t received_crc = BE_to_uint32(buf, buf_size - 4);
-        uint32_t computed_crc = crc32(buf + 15, real_paylen);
+        const uint8_t * payload_ptr = buf + kHeaderSize;
+        const uint8_t * crc_ptr = payload_ptr + real_paylen;
+        uint32_t received_crc = BE_to_uint32(crc_ptr, 0);
+        uint32_t computed_crc = crc32(payload_ptr, real_paylen);
 
         if(received_crc != computed_crc)
             return false;
 
         //copy payload to out_payload vector                                                       
-        for(int i=15 ;i<15+real_paylen;i++) //using real_paylen is equivalent to header_paylen
+        for(size_t i=kHeaderSize ;i<kHeaderSize+real_paylen;i++)
             out_payload.push_back(buf[i]) ;
             
         return true;
@@ -82,7 +82,7 @@ namespace linkchat
 
         //Fill Header 
         uint8_t * header_ptr = pdu_out.data();
-        if(serialize_header(h,header_ptr,kHeaderSize)!=15)return {};//return empty vector on failure
+        if(serialize_header(h,header_ptr,kHeaderSize)!=kHeaderSize)return {};//return empty vector on failure
         
         //Fill Payload
         uint8_t * payload_ptr = pdu_out.data() + kHeaderSize;
@@ -97,7 +97,7 @@ namespace linkchat
         return pdu_out;
     }
 
-    bool try_parse_ack(uint8_t * pdu,size_t pdu_size,AckFields& out)noexcept
+    bool try_parse_ack(const uint8_t * pdu,size_t pdu_size,AckFields& out)noexcept
     {
         if( pdu == nullptr || pdu_size < kHeaderSize + kAckPayloadSize + kCrcSize)
             return false;
@@ -113,7 +113,7 @@ namespace linkchat
         //check crc
         int crc_index = kHeaderSize+kAckPayloadSize;
         uint32_t crc_rcv = BE_to_uint32(pdu,crc_index);
-        uint8_t * payload_ptr = pdu + kHeaderSize;
+        const uint8_t * payload_ptr = pdu + kHeaderSize;
         uint32_t crc_calc = crc32(payload_ptr,kAckPayloadSize);
         if(crc_rcv != crc_calc)
             return false;
@@ -127,4 +127,62 @@ namespace linkchat
         
         return true;
     }
+
+    [[nodiscard]] vector<vector<uint8_t>> chunkify_from_buffer(const uint8_t *data,
+                                                               size_t data_size, 
+                                                               uint32_t msg_id,
+                                                               Type msg_type, 
+                                                               uint16_t mtu)
+    {
+        if(data_size == 0 || data==nullptr)
+            return {};
+
+        size_t cap = mtu_payload(mtu);
+
+        if(cap==0)
+            return {};
+
+        vector<vector<uint8_t>> out;
+
+        uint32_t total = (data_size)/cap;
+        if(data_size%cap != 0)
+            total++;
+
+        out.reserve(total);
+
+        for(uint32_t seq=0;seq<total;seq++)
+        {
+            size_t offset = static_cast<size_t>(seq)*cap;
+            size_t chunk_len = min(cap,data_size-offset);
+            Header h;
+            h.type = msg_type;
+            h.msg_id = msg_id;
+            h.seq = seq;
+            h.total = total;
+            h.payload_len = static_cast<uint16_t>(chunk_len);
+        
+            vector<uint8_t> pdu(kHeaderSize+chunk_len+kCrcSize);
+            const uint8_t * payload = data + offset;
+            size_t built_pdu = build_pdu(h,payload,chunk_len,pdu.data(),pdu.size());
+            
+            if(built_pdu != kHeaderSize + chunk_len + kCrcSize)
+                return {};
+
+            out.push_back(move(pdu));
+        }
+
+        return out;
+    }
+
+    [[nodiscard]] vector<vector<uint8_t>> chunkify_from_vector( const vector<uint8_t> &msg,
+                                                                uint32_t msg_id,
+                                                                Type msg_type,
+                                                                uint16_t mtu)
+    {
+        if(msg.empty())
+            return {};
+        else 
+            return chunkify_from_buffer(msg.data(),msg.size(),msg_id,msg_type,mtu);
+    }
+
 }

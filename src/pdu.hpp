@@ -21,18 +21,41 @@ namespace linkchat
                    Header &out_h,
                    std::vector<uint8_t> &out_payload) noexcept;
 
-    struct AckFields 
+    struct AckFields
     {
-        //Ack structure: type=ACK, seq=0, total=0, payload_len=8 (BE), CRC32(payload)
-        //Payload body 
-        std::uint32_t msg_id ;//id from message that is being acknowledged        
-        std::uint32_t highest_seq_ok; //biggest seq of consecutive PDU's received
+        // Ack structure: type=ACK, seq=0, total=0, payload_len=8 (BE), CRC32(payload)
+        // Payload body
+        std::uint32_t msg_id;         // id from message that is being acknowledged
+        std::uint32_t highest_seq_ok; // biggest seq of consecutive PDU's received
     };
 
-    bool is_ack_header(const Header& h)noexcept;
+    bool is_ack_header(const Header &h) noexcept;
 
-    std::vector<uint8_t> create_ack(const AckFields& ack)noexcept;
+    std::vector<uint8_t> create_ack(const AckFields &ack) noexcept;
 
-    bool try_parse_ack(std::uint8_t * pdu, std::size_t pdu_size, AckFields& out)noexcept;
+    bool try_parse_ack(std::uint8_t *pdu, std::size_t pdu_size, AckFields &out) noexcept;
 
+    
+
+    [[nodiscard]] inline constexpr std::size_t mtu_payload(std::uint16_t mtu) noexcept
+    {
+        if(mtu>kHeaderSize + kCrcSize)
+            return mtu-kHeaderSize-kCrcSize;
+        else 
+            return 0;
+    }
+
+    //create pdu from message stored in buffer
+    [[nodiscard]] std::vector<std::vector<std::uint8_t>> chunkify_from_buffer(const std::uint8_t *data,
+                                                                                std::size_t n,
+                                                                                std::uint32_t msg_id,
+                                                                                Type msg_type,
+                                                                                std::uint16_t mtu = 1500);
+
+    //create pdu from message stored in vector 
+    [[nodiscard]] std::vector<std::vector<std::uint8_t>>
+    chunkify_from_vector(const std::vector<std::uint8_t> &msg,
+                            std::uint32_t msg_id,
+                            Type msg_type,
+                            std::uint16_t mtu = 1500);
 }
