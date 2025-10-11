@@ -33,6 +33,7 @@ namespace linkchat
             event.accepted = false;
             return event;
         }
+        const uint32_t msg_id = static_cast<uint32_t>(h.msg_id) ;
 
         //fill event fields  after parsing header
         event.type = h.type;
@@ -64,7 +65,6 @@ namespace linkchat
         }
         
         //check if message state exists, if not create it
-        uint32_t msg_id = h.msg_id ;
         if(msgs_.find(msg_id) == msgs_.end())
         {
             MsgState new_msg;
@@ -90,7 +90,10 @@ namespace linkchat
             {
                 event.duplicate = true;
                 event.accepted = false;
-                event.highest_seq_ok = msgs_[msg_id].prefix;
+                if(msgs_[msg_id].prefix < 0)
+                    event.highest_seq_ok = 0u;
+                else
+                    event.highest_seq_ok = msgs_[msg_id].prefix;
                 AckFields ack = {.msg_id = msg_id, .highest_seq_ok = static_cast<uint32_t>(msgs_[msg_id].prefix)};
                 emit_ack_(ack); 
                 return event;
@@ -117,7 +120,7 @@ namespace linkchat
         }
         else    
         {
-            if(current_prefix == 0)
+            if(current_prefix < 0)
                 event.highest_seq_ok = 0u;
             else
                 event.highest_seq_ok = static_cast<uint32_t>(current_prefix);
@@ -143,14 +146,24 @@ namespace linkchat
         if(!is_complete(msg_id))
             return false;
         
-        out.clear();
-        out.reserve(msgs_[msg_id].bytes_accum);
+        size_t total_bytes = 0;
         for (uint8_t chunk = 0; chunk < msgs_[msg_id].total; chunk++)
         {
-            for(uint8_t byte = 0; byte< msgs_[msg_id].chunks[chunk].size(); byte++)
-            {
-                out.push_back(msgs_[msg_id].chunks[chunk][byte]);
-            }
+            total_bytes += msgs_[msg_id].chunks[chunk].size();
+        }
+
+        
+        if(total_bytes != msgs_[msg_id].bytes_accum)
+            return false;
+
+        out.clear();
+        out.reserve(total_bytes);
+
+        
+        for (uint32_t i = 0; i < msgs_[msg_id].total; i++)
+        {
+            vector<uint8_t> byte = msgs_[msg_id].chunks[i];
+            out.insert(out.end(), byte.begin(), byte.end());
         }
 
         msgs_.erase(msg_id);

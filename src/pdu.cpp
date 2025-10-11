@@ -1,9 +1,9 @@
 #include "pdu.hpp"
 #include "util/crc32.hpp"
 #include "util/helpers.hpp"
-#include "util/structs.hpp"
 #include <cstring>     // memcpy
 #include <vector>
+#include <iostream>
 using namespace std;
 
 namespace linkchat 
@@ -53,10 +53,11 @@ namespace linkchat
         if(received_crc != computed_crc)
             return false;
 
-        //copy payload to out_payload vector                                                       
+        //copy payload to out_payload vector      
+        out_payload.resize(real_paylen);                                                 
         for(size_t i=kHeaderSize ;i<kHeaderSize+real_paylen;i++)
-            out_payload.push_back(buf[i]) ;
-            
+            out_payload[i-kHeaderSize] = buf[i] ;
+
         return true;
     }
 
