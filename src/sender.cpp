@@ -47,16 +47,24 @@ namespace linkchat {
         txmsg.sent_at_ms.resize(txmsg.pdus.size(),0);
         txmsg.done = false;
 
-        uint32_t window_limt = min(cfg_.window, static_cast<uint32_t>(txmsg.pdus.size()));
-
-        for(uint32_t i = 0; i < window_limt; i++)
-        {
-            emit_tx_(txmsg.pdus[i]);
-            txmsg.sent_at_ms[i] = cfg_.now();
-        }
-        txmsg.next = window_limt;
-
         msgs_[msg_id] = move(txmsg);
+        auto msg = msgs_.find(msg_id);
+        TxMsg& msg_st = msg->second;
+
+        uint32_t window_limit = min(cfg_.window, static_cast<uint32_t>(msg_st.pdus.size()));
+        vector<vector<uint8_t>> to_send;
+        to_send.reserve(window_limit);
+        for(uint32_t i = 0; i < window_limit; i++)
+        {
+            to_send.push_back(msg_st.pdus[i]);
+            msg_st.sent_at_ms[i] = cfg_.now();
+        }
+        msg_st.next = window_limit;
+
+        for(uint32_t i = 0; i < to_send.size(); i++)
+        {
+            emit_tx_(to_send[i]);
+        }
 
         return msg_id;
     }
@@ -82,11 +90,11 @@ namespace linkchat {
         if(index + 1 <= msg_st.base)
             return;
 
-        msg_st.base = max(index+1 , msg_st.base);
+        msg_st.base = index + 1;
 
         if(msg_st.base>=msg_st.pdus.size())
         {
-            msg_st.done = true;
+            msg_st.done = true; 
             msgs_.erase(msg_id);
             return;
         }
@@ -103,11 +111,12 @@ namespace linkchat {
     void Sender::on_tick()noexcept
     {
         auto now = cfg_.now();
+        vector<uint32_t> to_erase;
         for(auto& [msg_id,msg_st] : msgs_)
         {
             if(msg_st.done)
             {
-                msgs_.erase(msg_id);
+                to_erase.push_back(msg_id);
                 continue;
             }
             if(msg_st.base>= msg_st.next)
@@ -124,8 +133,12 @@ namespace linkchat {
             for(uint32_t j = msg_st.base;j<msg_st.next;j++)
             {
                 emit_tx_(msg_st.pdus[j]);
-                msg_st.sent_at_ms[curr_ind] = now;
+                msg_st.sent_at_ms[j] = now;
             }
+        }
+        for(size_t i = 0;i<to_erase.size();i++)
+        {
+            msgs_.erase(to_erase[i]);
         }
     }
 
