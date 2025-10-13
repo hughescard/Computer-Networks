@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <string>
 #include "../header.hpp"
 #include "structs.hpp"
 
@@ -13,4 +14,5 @@ namespace linkchat
     void uint16_to_BE(std::uint16_t val, std::uint8_t *buf, int index)noexcept;
     std::uint32_t BE_to_uint32(const std::uint8_t *buf, int index)noexcept;
     std::uint16_t BE_to_uint16(const std::uint8_t *buf, int index)noexcept;
+    
 }

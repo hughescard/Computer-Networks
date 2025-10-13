@@ -33,9 +33,7 @@ namespace linkchat
 
     std::vector<uint8_t> create_ack(const AckFields &ack) noexcept;
 
-    bool try_parse_ack(std::uint8_t *pdu, std::size_t pdu_size, AckFields &out) noexcept;
-
-    
+    bool try_parse_ack(const std::uint8_t *pdu, std::size_t pdu_size, AckFields &out) noexcept;
 
     [[nodiscard]] inline constexpr std::size_t mtu_payload(std::uint16_t mtu) noexcept
     {

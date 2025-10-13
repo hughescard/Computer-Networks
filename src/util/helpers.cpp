@@ -2,6 +2,10 @@
 #include "structs.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <set>
+
+using namespace std;
 
 namespace linkchat
 {
@@ -60,4 +64,5 @@ namespace linkchat
                (static_cast<uint16_t>(buf[index + 1]));
     }
 
+    
 }
