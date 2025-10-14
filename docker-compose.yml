@@ -1,0 +1,23 @@
+version: "3.9"
+services:
+  lc1:
+    image: linkchat:latest
+    container_name: lc1
+    networks: [linkchat-net]
+    cap_add: ["NET_RAW"]
+    volumes: ["./inbox1:/inbox"]
+    stdin_open: true
+    tty: true
+
+  lc2:
+    image: linkchat:latest
+    container_name: lc2
+    networks: [linkchat-net]
+    cap_add: ["NET_RAW"]
+    volumes: ["./inbox2:/inbox"]
+    stdin_open: true
+    tty: true
+
+networks:
+  linkchat-net:
+    driver: bridge

@@ -23,18 +23,19 @@ namespace linkchat
 
     LinkchatApp::LinkchatApp(SenderConfig cfg) noexcept
         : cfg_(move(correctness_check(cfg))),
-          sender_([this](const vector<uint8_t> &pdu){ if(emit_pdu_) emit_pdu_(pdu); },cfg_),
-          rx_([this](const AckFields &ack){
+          sender_([this](const vector<uint8_t> &pdu)
+                  { if(emit_pdu_) emit_pdu_(pdu); }, cfg_),
+          rx_([this](const AckFields &ack)
+              {
             auto pdu = create_ack(ack);
-            if(!pdu.empty() && emit_pdu_) emit_pdu_(pdu);
-         }),
+            if(!pdu.empty() && emit_pdu_) emit_pdu_(pdu); }),
           emit_pdu_{},
           on_deliver_{}
     {
         if (!emit_pdu_)
             emit_pdu_ = [](const vector<uint8_t> &) {};
         if (!on_deliver_)
-            on_deliver_ = [](uint32_t, Type, const vector<uint8_t> &) {};
+            on_deliver_ = [](uint32_t, Type, const vector<uint8_t> &, const Mac &) {};
     }
 
     void LinkchatApp::set_emit_pdu(function<void(const vector<uint8_t> &)> fn) noexcept
@@ -48,21 +49,23 @@ namespace linkchat
     void LinkchatApp::set_on_deliver(DeliverMsgFn fn) noexcept
     {
         if (fn == nullptr)
-            on_deliver_ = [](uint32_t, Type, const vector<uint8_t> &) {};
+            on_deliver_ = [](uint32_t, Type, const vector<uint8_t> &, const Mac&) {};
         else
             on_deliver_ = move(fn);
     }
 
-    void LinkchatApp::on_rx_pdu(const uint8_t *pdu, size_t pdu_size) noexcept
+    void LinkchatApp::on_rx_pdu(const Mac &src_mac, const uint8_t *pdu, size_t pdu_size) noexcept
     {
         if (pdu == nullptr || pdu_size < kHeaderSize + kCrcSize)
             return;
 
         Header h{};
-        if(!parse_header(pdu,pdu_size,h)) return;
+        if (!parse_header(pdu, pdu_size, h))
+            return;
 
         const size_t want = kHeaderSize + static_cast<size_t>(h.payload_len) + kCrcSize;
-        if(pdu_size < want) return;
+        if (pdu_size < want)
+            return;
 
         AckFields ack{};
         if (try_parse_ack(const_cast<uint8_t *>(pdu), want, ack))
@@ -78,10 +81,22 @@ namespace linkchat
         {
             vector<uint8_t> out_msg;
             if (rx_.extract_message(event.msg_id, out_msg))
-                on_deliver_(event.msg_id, event.type, out_msg);
+                on_deliver_(event.msg_id, event.type, out_msg, src_mac);
         }
         else
             return;
+    }
+
+    uint32_t LinkchatApp::send_hello(const string &nick)
+    {
+        string nn = nick;
+        if (nn.size() > HELLO_NICK_MAX)
+            nn.resize(HELLO_NICK_MAX);
+        vector<uint8_t> payload;
+        payload.reserve(1 + nn.size());
+        payload.push_back(static_cast<uint8_t>(nn.size()));
+        payload.insert(payload.end(), nn.begin(), nn.end());
+        return send_bytes(payload, Type::HELLO);
     }
 
     uint32_t LinkchatApp::send_bytes(const vector<uint8_t> &data, Type type) noexcept

@@ -46,7 +46,7 @@ namespace linkchat
         //payload_len
         out.payload_len = BE_to_uint16(buf,uint8_t(Off::LEN));
 
-        return true; // false = fallo
+        return true; // false = failed
     }
 
 }

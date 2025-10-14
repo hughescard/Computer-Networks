@@ -1,4 +1,3 @@
-// src/sender.cpp
 #include "sender.hpp"
 #include <algorithm>
 #include <utility>

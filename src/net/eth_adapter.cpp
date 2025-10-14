@@ -199,13 +199,13 @@ namespace linkchat
         return (sent == static_cast<ssize_t>(frame.size()));
     }
 
-    void eth_rx_loop(function<void(const uint8_t *, size_t)> on_pdu) noexcept
+    void eth_rx_loop(function<void(const Mac&, const uint8_t *, size_t)> on_pdu) noexcept
     {
         if (g_rx_fd < 0)
             return;
         if (!on_pdu)
         {
-            on_pdu = [](const uint8_t *, size_t) {};
+            on_pdu = [](const Mac&, const uint8_t *, size_t) {};
         }
 
         const size_t bufcap = max<size_t>(g_cfg.frame_mtu + 64, 2048);
@@ -233,13 +233,13 @@ namespace linkchat
             if ((pfd.revents & POLLIN) == 0)
                 continue;
 
-            sockaddr_ll src{};
-            socklen_t alen = sizeof(src);
+            sockaddr_ll saddr{};
+            socklen_t alen = sizeof(saddr);
             const ssize_t rcv = ::recvfrom(g_rx_fd,
                                            buf.data(),
                                            static_cast<int>(buf.size()),
                                            0,
-                                           reinterpret_cast<sockaddr *>(&src),
+                                           reinterpret_cast<sockaddr *>(&saddr),
                                            &alen);
             if (rcv <= 0)
             {
@@ -253,25 +253,32 @@ namespace linkchat
                 continue;
 
             const uint16_t et = (static_cast<uint16_t>(buf[12]) << 8) | (static_cast<uint16_t>(buf[13]));
-            const int pkttype = src.sll_pkttype;
+            const int pkttype = saddr.sll_pkttype;
 
             if (et != g_cfg.ether_type)
                 continue;
 
-            if (pkttype != PACKET_HOST && pkttype != PACKET_BROADCAST && pkttype != PACKET_MULTICAST && pkttype != PACKET_OUTGOING)
+            if (pkttype != PACKET_HOST && pkttype != PACKET_BROADCAST && pkttype != PACKET_MULTICAST )
                 continue;
 
             Mac dst{};
-             for (int i = 0; i < 6; ++i)
-                 dst.bytes[i] = buf[0 + i];
+            for (int i = 0; i < 6; ++i)
+                dst.bytes[i] = buf[0 + i];
 
-            if (!(dst == g_cfg.src_mac) && !is_broadcast(dst) && pkttype != PACKET_OUTGOING)
+            if (!(dst == g_cfg.src_mac) && !is_broadcast(dst) /*&& pkttype != PACKET_OUTGOING*/)
+                continue;
+
+            Mac src_mac{};
+            for (int i = 0; i < 6; ++i)
+                src_mac.bytes[i] = buf[6 + i];
+
+            if (src_mac == g_cfg.src_mac)
                 continue;
 
             const uint8_t *payload_ptr = buf.data() + kEthHdr;
             const size_t payload_len = len - kEthHdr;
 
-            on_pdu(payload_ptr, payload_len);
+            on_pdu(src_mac, payload_ptr, payload_len);
         }
     }
 

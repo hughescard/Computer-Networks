@@ -19,8 +19,8 @@ namespace linkchat
 
         out.running = true;
         out.rx_thread = thread([&app, &out]
-                               { eth_rx_loop([&](const uint8_t *pdu, size_t pdu_size)
-                                             {if(out.running) app.on_rx_pdu(pdu, pdu_size); }); });
+                               { eth_rx_loop([&](const Mac& src_mac, const uint8_t *pdu, size_t pdu_size)
+                                             {if(out.running) app.on_rx_pdu(src_mac, pdu, pdu_size); }); });
 
         return true;
     }

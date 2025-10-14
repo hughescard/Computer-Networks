@@ -3,8 +3,8 @@
 #include <functional>
 #include <vector>
 #include <atomic>
-#include "app.hpp"
-#include "net/eth_adapter.hpp"
+#include "../app.hpp"
+#include "eth_adapter.hpp"
 
 namespace linkchat
 {

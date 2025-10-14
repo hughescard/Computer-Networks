@@ -61,22 +61,13 @@ namespace linkchat
 
     string bytes_to_hex(const uint8_t byte) noexcept
     {
-        string result;
-        char digit;
-        uint8_t value = byte;
-
-        do
-        {
-            digit = static_cast<char>(value % 16);
-            if (digit >= 10)
-            {
-                digit += 'a' - 10;
-            }
-            result = digit + result;
-            value /= 16;
-        } while (value > 0);
-
-        return result;
+        char buf[3];
+        // lowercase, two hex digits
+        static const char *hex = "0123456789abcdef";
+        buf[0] = hex[(byte >> 4) & 0xF];
+        buf[1] = hex[byte & 0xF];
+        buf[2] = '\0';
+        return string(buf);
     }
     bool is_broadcast(const Mac &mac) noexcept
     {
@@ -102,15 +93,14 @@ namespace linkchat
     {
         if (text.size() != 17)
             return false;
-
-        array<uint8_t, kMacSize> bytes{};
-        for (size_t i = 2; i < kMacSize; i += 3)
+        // check colon positions: 2,5,8,11,14
+        for (size_t i = 2; i < text.size(); i += 3)
         {
             if (text[i] != ':')
                 return false;
         }
 
-        for (int byte = 0; byte < 6; ++byte)
+        for (int byte = 0; byte < static_cast<int>(kMacSize); ++byte)
         {
             int hi = from_hex(text[byte * 3 + 0]);
             int lo = from_hex(text[byte * 3 + 1]);
@@ -124,13 +114,13 @@ namespace linkchat
     string mac_to_string(const Mac &mac) noexcept
     {
         string result;
-        for (int i = 0; i < kMacSize; i += 3)
+        for (int i = 0; i < static_cast<int>(kMacSize); ++i)
         {
+            if (i != 0)
+                result += ':';
             result += bytes_to_hex(mac.bytes[i]);
-            result += ":";
         }
-
-        return result.substr(0, result.length() - 1); // remove last ':'
+        return result;
     }
 
 }

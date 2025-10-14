@@ -21,7 +21,7 @@ namespace linkchat{
 
     bool eth_send_pdu(const std::vector<std::uint8_t>& pdu) noexcept;
 
-    void eth_rx_loop(std::function<void(const std::uint8_t*, std::size_t)> on_pdu) noexcept;
+    void eth_rx_loop(std::function<void(const Mac& ,const std::uint8_t*, std::size_t)> on_pdu) noexcept;
 
     void eth_shutdown() noexcept;
 
