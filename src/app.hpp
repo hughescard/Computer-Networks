@@ -34,6 +34,9 @@ namespace linkchat {
         bool is_done(std::uint32_t msg_id) const noexcept;
         
         std::size_t in_flight(std::uint32_t msg_id) const noexcept;
+
+        std::function<void(const std::vector<std::uint8_t>&)> get_emit_pdu() const noexcept;
+
         
     private:
         SenderConfig cfg_;

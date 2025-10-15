@@ -19,4 +19,6 @@ namespace linkchat
 
     void unbind_app_from_eth(AppEthHandle &h) noexcept;
 
+    bool app_eth_send_to(const Mac& dst, const std::vector<std::uint8_t>& pdu) noexcept;
+
 }

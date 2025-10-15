@@ -25,4 +25,7 @@ namespace linkchat{
 
     void eth_shutdown() noexcept;
 
+    bool eth_send_pdu_to(const Mac& dst, const std::vector<std::uint8_t>& pdu) noexcept;
+
+
 } 

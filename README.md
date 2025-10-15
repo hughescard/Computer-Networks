@@ -17,6 +17,7 @@
   - [Arquitectura \& Protocolo](#arquitectura--protocolo)
   - [Requisitos](#requisitos)
   - [Compilación](#compilación)
+  - [Docker](#docker)
 
 ---
 
@@ -37,6 +38,7 @@
 ## Arquitectura & Protocolo
 
 **Módulos principales:**
+
 - `eth_adapter`: sockets RAW (RX/TX), construcción y filtrado de frames  
 - `app_eth_bind`: hilo RX que enlaza Ethernet ↔ LinkchatApp  
 - `LinkchatApp`: coordina envío/recepción, ACKs, ventana, reensamblado  
@@ -67,3 +69,21 @@ mkdir -p build
 cd build
 cmake -DCMAKE_BUILD_TYPE=Release ..
 cmake --build . -j
+
+---
+
+## Docker 
+
+Construir imagen: docker build -t linkchat:latest .
+Crear red bridge: docker network create --driver bridge linkchat-net
+Crear nodo: docker run -it --rm --name <contaier_name> --cap-add NET_RAW \
+            --network linkchat-net -v "$(pwd)/inbox1:/inbox" linkchat:latest
+
+
+docker stop lc1 lc2 2>/dev/null || true
+
+docker rm -f lc1 lc2 2>/dev/null || true
+
+docker network rm linkchat-net 2>/dev/null || true
+
+docker rmi linkchat:latest 2>/dev/null || true

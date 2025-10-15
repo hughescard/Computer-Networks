@@ -49,7 +49,7 @@ namespace linkchat
     void LinkchatApp::set_on_deliver(DeliverMsgFn fn) noexcept
     {
         if (fn == nullptr)
-            on_deliver_ = [](uint32_t, Type, const vector<uint8_t> &, const Mac&) {};
+            on_deliver_ = [](uint32_t, Type, const vector<uint8_t> &, const Mac &) {};
         else
             on_deliver_ = move(fn);
     }
@@ -119,6 +119,11 @@ namespace linkchat
     size_t LinkchatApp::in_flight(uint32_t msg_id) const noexcept
     {
         return sender_.in_flight(msg_id);
+    }
+
+    auto LinkchatApp::get_emit_pdu() const noexcept -> function<void(const vector<uint8_t> &)>
+    {
+        return emit_pdu_;
     }
 
 }

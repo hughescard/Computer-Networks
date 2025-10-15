@@ -61,7 +61,7 @@ namespace
         cout <<
             R"(Commands:
             config                Configure interface, destination MAC and protocol params
-            chat                  Start interactive chat (text + /sendfile <path>)
+            chat                  Start interactive chat (text + /sendfile <path> + /all <text> + /allfile <path>)
             send <path>           Send a file directly and return to prompt
             discover              Send HELLO packet to discover peers
             info                  Show current configuration
@@ -70,6 +70,8 @@ namespace
             While in chat:
             Type messages and press Enter to send
             Use /sendfile <path> to send files
+            Use /all <text> to send to all peers
+            Use /allfile <path> to send a file to all peers
             Use /quit to leave chat
             )";
     }
@@ -163,12 +165,103 @@ namespace
         out_mac.assign(reinterpret_cast<const char *>(&data[1 + nlen]), 17);
         return true;
     }
+
+    static bool make_ethcfg_for(const RuntimeConfig &rcfg,
+                                const string &dst_mac_ascii,
+                                EthConfig &out)
+    {
+        out.ifname = rcfg.ifname;
+        out.ether_type = rcfg.ethertype;
+        out.frame_mtu = static_cast<size_t>(rcfg.mtu);
+
+        if (!parse_mac(dst_mac_ascii, out.dst_mac))
+            return false;
+
+        return true;
+    }
+
+    static bool broadcast_send_msg(const RuntimeConfig &rcfg,
+                                   const vector<uint8_t> &bytes)
+    {
+        if (rcfg.ifname.empty())
+        {
+            cerr << "[ERR] set interface in config\n";
+            return false;
+        }
+
+        SenderConfig scfg{};
+        scfg.mtu = rcfg.mtu;
+        scfg.window = rcfg.window;
+        scfg.rto_ms = rcfg.rto_ms;
+        EthConfig ecfg{};
+        if (!make_ethcfg_for(rcfg, "ff:ff:ff:ff:ff:ff", ecfg))
+        {
+            cerr << "[ERR] cannot build broadcast eth config\n";
+            return false;
+        }
+
+        LinkchatApp app(scfg);
+        AppEthHandle h{};
+        if (!bind_app_to_eth(app, ecfg, h))
+        {
+            cerr << "[ERR] bind(broadcast) failed\n";
+            return false;
+        }
+
+        app.send_bytes(bytes, Type::MSG);
+
+        // pequeña espera para salir sin dejar PDUs colgando
+        auto until = chrono::steady_clock::now() + chrono::milliseconds(800);
+        while (chrono::steady_clock::now() < until)
+        {
+            app.tick();
+            this_thread::sleep_for(chrono::milliseconds(10));
+        }
+        unbind_app_from_eth(h);
+        return true;
+    }
+
+    static bool broadcast_send_file(const RuntimeConfig &rcfg, const string &path)
+    {
+        vector<uint8_t> raw;
+        if (!read_file(path, raw))
+        {
+            cerr << "[ERR] cannot read file: " << path << "\n";
+            return false;
+        }
+        auto wrapped = wrap_file_with_name(path, raw); // <-- usa el helper que ya añadimos antes
+        SenderConfig scfg{};
+        scfg.mtu = rcfg.mtu;
+        scfg.window = rcfg.window;
+        scfg.rto_ms = rcfg.rto_ms;
+
+        EthConfig ecfg{};
+        if (!make_ethcfg_for(rcfg, "ff:ff:ff:ff:ff:ff", ecfg))
+        {
+            cerr << "[ERR] cannot build broadcast eth config\n";
+            return false;
+        }
+        LinkchatApp app(scfg);
+        AppEthHandle h{};
+        if (!bind_app_to_eth(app, ecfg, h))
+        {
+            cerr << "[ERR] bind(broadcast) failed\n";
+            return false;
+        }
+        app.send_bytes(wrapped, Type::FILE);
+        auto until = chrono::steady_clock::now() + chrono::milliseconds(1000);
+        while (chrono::steady_clock::now() < until)
+        {
+            app.tick();
+            this_thread::sleep_for(chrono::milliseconds(10));
+        }
+        unbind_app_from_eth(h);
+        return true;
+    }
 }
 
 int run_cli()
 {
-    using namespace linkchat;
-
     RuntimeConfig cfg;
     signal(SIGINT, on_sigint);
 
@@ -385,6 +478,50 @@ int run_cli()
                     continue;
                 }
 
+                if (msg.rfind("/all ", 0) == 0)
+                {
+                    string text = msg.substr(5);
+                    vector<uint8_t> bytes(text.begin(), text.end());
+
+                    auto prev_emit = app.get_emit_pdu(); // si no tienes get_emit_pdu(), ver nota abajo
+
+                    linkchat::Mac bcast{};
+                    fill(begin(bcast.bytes), end(bcast.bytes), 0xFF);
+
+                    app.set_emit_pdu([&](const vector<uint8_t> &pdu)
+                                     {
+                                         (void)eth_send_pdu_to(bcast, pdu); 
+                                     });
+
+                    app.send_bytes(bytes, linkchat::Type::MSG);
+
+                    auto until = chrono::steady_clock::now() + chrono::milliseconds(600);
+                    while (chrono::steady_clock::now() < until)
+                    {
+                        app.tick();
+                        this_thread::sleep_for(chrono::milliseconds(10));
+                    }
+
+                    app.set_emit_pdu(prev_emit);
+
+                    cout << "[broadcast] sent (" << bytes.size() << " bytes)\n> ";
+                    continue;
+                }
+
+                if (msg.rfind("/allfile ", 0) == 0)
+                {
+                    string path = msg.substr(string("/allfile ").size());
+                    if (broadcast_send_file(cfg, path))
+                    {
+                        cout << "[broadcast file] sent " << fs::path(path).filename().string() << "\n> ";
+                    }
+                    else
+                    {
+                        cerr << "[ERR] broadcast file failed\n> ";
+                    }
+                    continue;
+                }
+
                 vector<uint8_t> bytes(msg.begin(), msg.end());
                 app.send_bytes(bytes, Type::MSG);
                 cout << "> ";
@@ -509,9 +646,9 @@ int run_cli()
             auto end = chrono::steady_clock::now() + chrono::seconds(10);
             while (chrono::steady_clock::now() < end)
             {
-                app.send_hello(cfg.alias); 
+                app.send_hello(cfg.alias);
                 for (int i = 0; i < 100; i++)
-                { 
+                {
                     app.tick();
                     this_thread::sleep_for(chrono::milliseconds(10));
                 }

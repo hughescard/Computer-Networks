@@ -19,7 +19,7 @@ namespace linkchat
 
         out.running = true;
         out.rx_thread = thread([&app, &out]
-                               { eth_rx_loop([&](const Mac& src_mac, const uint8_t *pdu, size_t pdu_size)
+                               { eth_rx_loop([&](const Mac &src_mac, const uint8_t *pdu, size_t pdu_size)
                                              {if(out.running) app.on_rx_pdu(src_mac, pdu, pdu_size); }); });
 
         return true;
@@ -31,6 +31,11 @@ namespace linkchat
         eth_shutdown();
         if (h.rx_thread.joinable())
             h.rx_thread.join();
+    }
+
+    bool app_eth_send_to(const Mac &dst, const vector<uint8_t> &pdu) noexcept
+    {
+        return eth_send_pdu_to(dst, pdu);
     }
 
 }

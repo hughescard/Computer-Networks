@@ -171,7 +171,7 @@ namespace linkchat
 
         size_t frame_len = kEthHdr + pdu.size();
         if (frame_len < 60)
-            frame_len = 60; 
+            frame_len = 60;
 
         vector<uint8_t> frame(frame_len, 0);
         build_eth_header(frame.data(), g_cfg.dst_mac, g_cfg.src_mac, g_cfg.ether_type);
@@ -199,13 +199,13 @@ namespace linkchat
         return (sent == static_cast<ssize_t>(frame.size()));
     }
 
-    void eth_rx_loop(function<void(const Mac&, const uint8_t *, size_t)> on_pdu) noexcept
+    void eth_rx_loop(function<void(const Mac &, const uint8_t *, size_t)> on_pdu) noexcept
     {
         if (g_rx_fd < 0)
             return;
         if (!on_pdu)
         {
-            on_pdu = [](const Mac&, const uint8_t *, size_t) {};
+            on_pdu = [](const Mac &, const uint8_t *, size_t) {};
         }
 
         const size_t bufcap = max<size_t>(g_cfg.frame_mtu + 64, 2048);
@@ -258,7 +258,7 @@ namespace linkchat
             if (et != g_cfg.ether_type)
                 continue;
 
-            if (pkttype != PACKET_HOST && pkttype != PACKET_BROADCAST && pkttype != PACKET_MULTICAST )
+            if (pkttype != PACKET_HOST && pkttype != PACKET_BROADCAST && pkttype != PACKET_MULTICAST)
                 continue;
 
             Mac dst{};
@@ -294,6 +294,31 @@ namespace linkchat
         }
         g_ifindex = -1;
         g_cfg = {};
+    }
+
+    bool eth_send_pdu_to(const Mac &dst, const vector<uint8_t> &pdu) noexcept
+    {
+        if (g_tx_fd < 0)
+            return false;
+        
+        const size_t min_frame_no_crc = 60; 
+        vector<uint8_t> frame;
+        frame.reserve(max(min_frame_no_crc, kEthHdr + pdu.size()));
+
+        frame.insert(frame.end(), begin(dst.bytes), end(dst.bytes));
+        
+        frame.insert(frame.end(), begin(g_cfg.src_mac.bytes), end(g_cfg.src_mac.bytes));
+       
+        frame.push_back(static_cast<uint8_t>(g_cfg.ether_type >> 8));
+        frame.push_back(static_cast<uint8_t>(g_cfg.ether_type & 0xFF));
+        
+        frame.insert(frame.end(), pdu.begin(), pdu.end());
+
+        if (frame.size() < min_frame_no_crc)
+            frame.resize(min_frame_no_crc, 0);
+
+        ssize_t n = ::send(g_tx_fd, frame.data(), frame.size(), 0);
+        return (n == static_cast<ssize_t>(frame.size()));
     }
 
 }
