@@ -16,6 +16,13 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <mutex>
+#include <unordered_map>
+#include <optional>
+#include <algorithm>
+#include <iomanip>
+#include <ctime>
+#include <unordered_set>
 
 using namespace std;
 using namespace chrono_literals;
@@ -61,7 +68,8 @@ namespace
         cout <<
             R"(Commands:
             config                Configure interface, destination MAC and protocol params
-            chat                  Start interactive chat (text + /sendfile <path> + /all <text> + /allfile <path>)
+            chat                  Start interactive chat (text + /sendfile <path>)
+            groupchat             Start interactive group chat (send to all online)
             send <path>           Send a file directly and return to prompt
             discover              Send HELLO packet to discover peers
             info                  Show current configuration
@@ -70,8 +78,11 @@ namespace
             While in chat:
             Type messages and press Enter to send
             Use /sendfile <path> to send files
-            Use /all <text> to send to all peers
-            Use /allfile <path> to send a file to all peers
+            Use /online to list online peers (alias + mac)
+            Use /contacts to list all seen contacts (with status)
+            Use /connect <alias> to switch chat target
+            In groupchat, manage recipients with:
+              /members list | add <alias> | del <alias|mac> | clear
             Use /quit to leave chat
             )";
     }
@@ -166,6 +177,114 @@ namespace
         return true;
     }
 
+    static string now_hms()
+    {
+        using namespace std::chrono;
+        auto t = system_clock::to_time_t(system_clock::now());
+        std::tm tm{};
+#if defined(_WIN32)
+        localtime_s(&tm, &t);
+#else
+        localtime_r(&t, &tm);
+#endif
+        std::ostringstream oss;
+        oss << std::put_time(&tm, "%H:%M:%S");
+        return oss.str();
+    }
+
+    struct PeerInfo {
+        string alias;
+        Mac mac;
+        string mac_ascii;
+        chrono::steady_clock::time_point last_seen;
+    };
+
+    class PeerRegistry {
+    public:
+        explicit PeerRegistry(chrono::seconds ttl): ttl_(ttl) {}
+
+        void upsert(const string& alias, const Mac& mac, const string& mac_ascii)
+        {
+            lock_guard<mutex> lk(mu_);
+            string key = mac_to_string(mac);
+            auto &p = by_mac_[key];
+            p.alias = alias;
+            p.mac = mac;
+            p.mac_ascii = mac_ascii.empty() ? key : mac_ascii;
+            p.last_seen = chrono::steady_clock::now();
+        }
+
+        vector<PeerInfo> list_online() const
+        {
+            lock_guard<mutex> lk(mu_);
+            vector<PeerInfo> out;
+            auto now = chrono::steady_clock::now();
+            for (auto &kv : by_mac_)
+            {
+                if (now - kv.second.last_seen <= ttl_)
+                    out.push_back(kv.second);
+            }
+            return out;
+        }
+
+        vector<PeerInfo> list_all() const
+        {
+            lock_guard<mutex> lk(mu_);
+            vector<PeerInfo> out;
+            for (auto &kv : by_mac_)
+                out.push_back(kv.second);
+            return out;
+        }
+
+        vector<PeerInfo> find_by_alias(const string& alias) const
+        {
+            lock_guard<mutex> lk(mu_);
+            vector<PeerInfo> out;
+            auto now = chrono::steady_clock::now();
+            for (auto &kv : by_mac_)
+            {
+                if (now - kv.second.last_seen <= ttl_ && kv.second.alias == alias)
+                    out.push_back(kv.second);
+            }
+            return out;
+        }
+
+        optional<PeerInfo> get_by_mac(const Mac& mac) const
+        {
+            lock_guard<mutex> lk(mu_);
+            string key = mac_to_string(mac);
+            auto it = by_mac_.find(key);
+            if (it == by_mac_.end()) return nullopt;
+            auto now = chrono::steady_clock::now();
+            if (now - it->second.last_seen > ttl_) return nullopt;
+            return it->second;
+        }
+
+        optional<PeerInfo> latest_by_alias(const string& alias) const
+        {
+            lock_guard<mutex> lk(mu_);
+            optional<PeerInfo> best;
+            auto now = chrono::steady_clock::now();
+            for (auto &kv : by_mac_)
+            {
+                const auto &p = kv.second;
+                if (now - p.last_seen > ttl_)
+                    continue;
+                if (p.alias != alias)
+                    continue;
+                if (!best.has_value() || p.last_seen > best->last_seen)
+                    best = p;
+            }
+            return best;
+        }
+
+        void prune() { /* no-op: keep contacts history during session */ }
+    private:
+        chrono::seconds ttl_;
+        mutable mutex mu_;
+        unordered_map<string, PeerInfo> by_mac_;
+    };
+
     static bool make_ethcfg_for(const RuntimeConfig &rcfg,
                                 const string &dst_mac_ascii,
                                 EthConfig &out)
@@ -180,84 +299,7 @@ namespace
         return true;
     }
 
-    static bool broadcast_send_msg(const RuntimeConfig &rcfg,
-                                   const vector<uint8_t> &bytes)
-    {
-        if (rcfg.ifname.empty())
-        {
-            cerr << "[ERR] set interface in config\n";
-            return false;
-        }
-
-        SenderConfig scfg{};
-        scfg.mtu = rcfg.mtu;
-        scfg.window = rcfg.window;
-        scfg.rto_ms = rcfg.rto_ms;
-        EthConfig ecfg{};
-        if (!make_ethcfg_for(rcfg, "ff:ff:ff:ff:ff:ff", ecfg))
-        {
-            cerr << "[ERR] cannot build broadcast eth config\n";
-            return false;
-        }
-
-        LinkchatApp app(scfg);
-        AppEthHandle h{};
-        if (!bind_app_to_eth(app, ecfg, h))
-        {
-            cerr << "[ERR] bind(broadcast) failed\n";
-            return false;
-        }
-
-        app.send_bytes(bytes, Type::MSG);
-
-        // pequeña espera para salir sin dejar PDUs colgando
-        auto until = chrono::steady_clock::now() + chrono::milliseconds(800);
-        while (chrono::steady_clock::now() < until)
-        {
-            app.tick();
-            this_thread::sleep_for(chrono::milliseconds(10));
-        }
-        unbind_app_from_eth(h);
-        return true;
-    }
-
-    static bool broadcast_send_file(const RuntimeConfig &rcfg, const string &path)
-    {
-        vector<uint8_t> raw;
-        if (!read_file(path, raw))
-        {
-            cerr << "[ERR] cannot read file: " << path << "\n";
-            return false;
-        }
-        auto wrapped = wrap_file_with_name(path, raw); // <-- usa el helper que ya añadimos antes
-        SenderConfig scfg{};
-        scfg.mtu = rcfg.mtu;
-        scfg.window = rcfg.window;
-        scfg.rto_ms = rcfg.rto_ms;
-
-        EthConfig ecfg{};
-        if (!make_ethcfg_for(rcfg, "ff:ff:ff:ff:ff:ff", ecfg))
-        {
-            cerr << "[ERR] cannot build broadcast eth config\n";
-            return false;
-        }
-        LinkchatApp app(scfg);
-        AppEthHandle h{};
-        if (!bind_app_to_eth(app, ecfg, h))
-        {
-            cerr << "[ERR] bind(broadcast) failed\n";
-            return false;
-        }
-        app.send_bytes(wrapped, Type::FILE);
-        auto until = chrono::steady_clock::now() + chrono::milliseconds(1000);
-        while (chrono::steady_clock::now() < until)
-        {
-            app.tick();
-            this_thread::sleep_for(chrono::milliseconds(10));
-        }
-        unbind_app_from_eth(h);
-        return true;
-    }
+    
 }
 
 int run_cli()
@@ -312,9 +354,6 @@ int run_cli()
             cout << "Interface name: ";
             getline(cin, cfg.ifname);
 
-            cout << "Destination MAC: ";
-            getline(cin, cfg.dst_mac);
-
             cout << "MTU (default 1500): ";
             getline(cin, s);
             if (!s.empty())
@@ -351,9 +390,9 @@ int run_cli()
 
         if (cmd == "chat")
         {
-            if (cfg.ifname.empty() || cfg.dst_mac.empty())
+            if (cfg.ifname.empty())
             {
-                cerr << "[ERR] please run 'config' first.\n";
+                cerr << "[ERR] please set interface with 'config' first.\n";
                 continue;
             }
 
@@ -367,13 +406,18 @@ int run_cli()
             ecfg.ether_type = cfg.ethertype;
             ecfg.frame_mtu = static_cast<size_t>(cfg.mtu);
 
-            if (!parse_mac(cfg.dst_mac, ecfg.dst_mac))
-            {
-                cerr << "[ERR] invalid destination MAC format.\n";
-                continue;
-            }
-
             LinkchatApp app(scfg);
+
+            // Dynamic destination for chat messages; starts with configured MAC
+            Mac active_dst_mac{};
+            if (!cfg.dst_mac.empty())
+                parse_mac(cfg.dst_mac, active_dst_mac);
+            mutex dst_mu;
+
+            // Peer registry with TTL
+            PeerRegistry peers(chrono::seconds(30));
+            // Serialize temporary emit overrides vs normal sends
+            mutex emit_swap_mu;
 
             app.set_on_deliver([&](uint32_t msg_id, Type type, const vector<uint8_t> &data, const Mac &src_mac)
                                {
@@ -382,8 +426,7 @@ int run_cli()
                                         string alias, peer_mac_ascii;
                                         if (parse_hello_payload(data, alias, peer_mac_ascii))
                                         {
-                                            cout << "\n[hello] peer=" << (alias.empty() ? "LinkChat User" : alias)
-                                                 << " mac=" << peer_mac_ascii << "\n";
+                                            peers.upsert(alias, src_mac, peer_mac_ascii);
                                         }
                                         else
                                         {
@@ -395,13 +438,17 @@ int run_cli()
                                                 if(data.size() >= 1 + alias_len)
                                                     alias2.assign(reinterpret_cast<const char*>(&data[1]), alias_len);
                                             }
-                                            cout << "\n[hello] peer=" << (alias2.empty() ? "LinkChat User" : alias2)
-                                                 << " mac=" << mac_to_string(src_mac) << "\n";
+                                            peers.upsert(alias2, src_mac, mac_to_string(src_mac));
                                         }
                                         return;
                                     }
                                     if (type == Type::FILE) 
                                     {
+                                        string sender = mac_to_string(src_mac);
+                                        if (auto pi = peers.get_by_mac(src_mac))
+                                        {
+                                            if (!pi->alias.empty()) sender = pi->alias;
+                                        }
                                         string fname;
                                         vector<uint8_t> file_bytes;
                                         if (unwrap_file_with_name(data, fname, file_bytes)) 
@@ -413,7 +460,7 @@ int run_cli()
                                             auto outpath = (fs::path(cfg.outdir) / fs::path(fname)).string();
                                             if (write_file(outpath, file_bytes)) 
                                             {
-                                                cout<< "\n[file recv] saved " << outpath
+                                                cout<< "\n[" << now_hms() << "] [" << sender << "] file recv: saved " << outpath
                                                     << " (" << file_bytes.size() << " bytes)\n> ";
                                             } 
                                             else 
@@ -427,7 +474,7 @@ int run_cli()
                                             auto outpath = (fs::path(cfg.outdir) / fs::path("file-" + to_string(msg_id) + ".bin")).string();
                                             if (write_file(outpath, data)) 
                                             {
-                                                cout << "\n[file recv] saved " << outpath
+                                                cout << "\n[" << now_hms() << "] [" << sender << "] file recv: saved " << outpath
                                                     << " (" << data.size() << " bytes)\n> ";
                                             } 
                                             else 
@@ -438,7 +485,15 @@ int run_cli()
                                         return;
                                     }
 
-                                    cout << "\n[" << msg_id << "] " << string(data.begin(), data.end()) << "\n> "; });
+                                    {
+                                        string sender = mac_to_string(src_mac);
+                                        if (auto pi = peers.get_by_mac(src_mac))
+                                        {
+                                            if (!pi->alias.empty()) sender = pi->alias;
+                                        }
+                                        cout << "\n[" << now_hms() << "] [" << sender << "] "
+                                             << string(data.begin(), data.end()) << "\n> ";
+                                    } });
 
             AppEthHandle handle{};
             if (!bind_app_to_eth(app, ecfg, handle))
@@ -446,6 +501,8 @@ int run_cli()
                 cerr << "[ERR] bind failed (eth init / RX thread)\n";
                 continue;
             }
+
+            // Use app.send_bytes_to for per-peer delivery; no override needed
 
             cout << "[chat] connected. Type messages, /sendfile <path> to send file, /quit to exit.\n";
 
@@ -456,11 +513,370 @@ int run_cli()
                     this_thread::sleep_for(10ms);
                 } });
 
+            // Helper to build a single-PDU (seq=0,total=1) without reliable sender
+            auto build_single_pdu = [&](Type t, const vector<uint8_t>& payload){
+                Header h{}; h.type=t; h.msg_id=0; h.seq=0; h.total=1; h.payload_len=static_cast<uint16_t>(payload.size());
+                vector<uint8_t> pdu(kHeaderSize + payload.size() + kCrcSize);
+                size_t n = build_pdu(h, payload.data(), payload.size(), pdu.data(), pdu.size());
+                if (n != pdu.size()) return vector<uint8_t>{};
+                return pdu;
+            };
+
+            // Background discovery thread: periodic HELLO broadcast
+            atomic<bool> disc_run{true};
+            thread disc_thr([&]()
+                            {
+                                const auto period = chrono::seconds(5);
+                                const string my_mac_ascii = get_local_mac_ascii(cfg.ifname);
+                                while (disc_run.load())
+                                {
+                                    auto payload = build_hello_payload(cfg.alias, my_mac_ascii);
+                                    auto pdu = build_single_pdu(Type::HELLO, payload);
+                                    if (!pdu.empty()) {
+                                        Mac bcast{}; fill(std::begin(bcast.bytes), std::end(bcast.bytes), 0xFF);
+                                        (void)eth_send_pdu_to(bcast, pdu);
+                                    }
+                                    // sleep until next period
+                                    for (int i = 0; i < 50 && disc_run.load(); ++i)
+                                        this_thread::sleep_for(chrono::milliseconds(period.count()*20)); // ~5s total
+                                }
+                            });
+
             string msg;
             while (getline(cin, msg))
             {
                 if (msg == "/quit")
                     break;
+
+                if (msg == "/online")
+                {
+                    auto list = peers.list_online();
+                    cout << "[online] peers: " << list.size() << "\n";
+                    auto now = chrono::steady_clock::now();
+                    int idx = 1;
+                    for (const auto &p : list)
+                    {
+                        auto age = chrono::duration_cast<chrono::seconds>(now - p.last_seen).count();
+                        cout << "  " << idx++ << ") alias=" << (p.alias.empty()?"(anon)":p.alias)
+                             << " mac=" << p.mac_ascii
+                             << " last=" << age << "s ago\n";
+                    }
+                    cout << "> ";
+                    continue;
+                }
+
+                if (msg == "/contacts")
+                {
+                    auto list = peers.list_all();
+                    cout << "[contacts] total: " << list.size() << "\n";
+                    auto now = chrono::steady_clock::now();
+                    int idx = 1;
+                    for (const auto &p : list)
+                    {
+                        bool online = (now - p.last_seen <= chrono::seconds(30));
+                        cout << "  " << idx++ << ") alias=" << (p.alias.empty()?"(anon)":p.alias)
+                             << " mac=" << p.mac_ascii
+                             << " status=" << (online?"online":"offline") << "\n";
+                    }
+                    cout << "> ";
+                    continue;
+                }
+
+                // removed chat subcommand /discover
+
+                if (msg.rfind("/connect ", 0) == 0)
+                {
+                    string alias = msg.substr(string("/connect ").size());
+                    if (alias.empty()) { cerr << "Usage: /connect <alias>\n> "; continue; }
+                    auto best = peers.latest_by_alias(alias);
+                    if (!best)
+                    {
+                        cerr << "[ERR] alias not found or offline: " << alias << "\n> ";
+                        continue;
+                    }
+                    {
+                        lock_guard<mutex> lk(dst_mu);
+                        active_dst_mac = best->mac;
+                        cfg.dst_mac = best->mac_ascii; // reflect selection in runtime config
+                    }
+                    cout << "[connect] now chatting with alias='" << (best->alias.empty()?"(anon)":best->alias)
+                         << "' mac=" << best->mac_ascii << "\n> ";
+                    continue;
+                }
+
+                if (msg.rfind("/sendfile ", 0) == 0)
+                {
+                    string path = msg.substr(string("/sendfile ").size());
+                    {
+                        lock_guard<mutex> lk(dst_mu);
+                        if (is_zero(active_dst_mac))
+                        {
+                            cerr << "[ERR] no active peer. Use /connect <alias> (see /online)\n> ";
+                            continue;
+                        }
+                    }
+                    vector<uint8_t> bytes;
+                    if (!read_file(path, bytes))
+                    {
+                        cerr << "[ERR] cannot read file: " << path << "\n> ";
+                        continue;
+                    }
+                    auto wrapped = wrap_file_with_name(path, bytes);
+                    {
+                        lock_guard<mutex> lk(emit_swap_mu);
+                        app.send_bytes_to(active_dst_mac, wrapped, Type::FILE);
+                    }
+                    cout << "[file sent] " << fs::path(path).filename().string()
+                         << " (" << bytes.size() << " bytes)\n> ";
+                    continue;
+                }
+
+                
+
+                {
+                    lock_guard<mutex> lk(dst_mu);
+                    if (is_zero(active_dst_mac))
+                    {
+                        cerr << "[ERR] no active peer. Use /connect <alias> (see /online)\n> ";
+                        continue;
+                    }
+                }
+                vector<uint8_t> bytes(msg.begin(), msg.end());
+                {
+                    lock_guard<mutex> lk(emit_swap_mu);
+                    app.send_bytes_to(active_dst_mac, bytes, Type::MSG);
+                }
+                cout << "> ";
+            }
+
+            g_running.store(false);
+            if (tick_thr.joinable())
+                tick_thr.join();
+            disc_run.store(false);
+            if (disc_thr.joinable())
+                disc_thr.join();
+            unbind_app_from_eth(handle);
+            g_running.store(true);
+            continue;
+        }
+
+        if (cmd == "groupchat")
+        {
+            if (cfg.ifname.empty())
+            {
+                cerr << "[ERR] please set interface with 'config' first.\n";
+                continue;
+            }
+
+            SenderConfig scfg{};
+            scfg.mtu = cfg.mtu;
+            scfg.window = cfg.window;
+            scfg.rto_ms = cfg.rto_ms;
+
+            EthConfig ecfg{};
+            ecfg.ifname = cfg.ifname;
+            ecfg.ether_type = cfg.ethertype;
+            ecfg.frame_mtu = static_cast<size_t>(cfg.mtu);
+
+            LinkchatApp app(scfg);
+
+            // Peer registry with TTL and helpers
+            PeerRegistry peers(chrono::seconds(30));
+
+            app.set_on_deliver([&](uint32_t msg_id, Type type, const vector<uint8_t> &data, const Mac &src_mac)
+                               {
+                                    if (type == Type::HELLO)
+                                    {
+                                        string alias, peer_mac_ascii;
+                                        if (parse_hello_payload(data, alias, peer_mac_ascii))
+                                            peers.upsert(alias, src_mac, peer_mac_ascii);
+                                        else
+                                        {
+                                            string alias2;
+                                            if(!data.empty())
+                                            {
+                                                uint8_t alias_len = data[0];
+                                                if(data.size() >= 1 + alias_len)
+                                                    alias2.assign(reinterpret_cast<const char*>(&data[1]), alias_len);
+                                            }
+                                            peers.upsert(alias2, src_mac, mac_to_string(src_mac));
+                                        }
+                                        return;
+                                    }
+                                    if (type == Type::FILE)
+                                    {
+                                        string sender = mac_to_string(src_mac);
+                                        if (auto pi = peers.get_by_mac(src_mac))
+                                            if (!pi->alias.empty()) sender = pi->alias;
+                                        string fname; vector<uint8_t> file_bytes;
+                                        if (unwrap_file_with_name(data, fname, file_bytes))
+                                        {
+                                            if (!ensure_dir(cfg.outdir))
+                                                cerr << "\n[WARN] cannot access outdir '" << cfg.outdir << "', using current dir\n> ";
+                                            auto outpath = (fs::path(cfg.outdir) / fs::path(fname)).string();
+                                            if (write_file(outpath, file_bytes))
+                                                cout<< "\n[" << now_hms() << "] [" << sender << "] file recv: saved " << outpath
+                                                    << " (" << file_bytes.size() << " bytes)\n> ";
+                                            else
+                                                cerr << "\n[ERR] failed to save file msg_id=" << msg_id << "\n> ";
+                                        }
+                                        else
+                                        {
+                                            auto outpath = (fs::path(cfg.outdir) / fs::path("file-" + to_string(msg_id) + ".bin")).string();
+                                            if (write_file(outpath, data))
+                                                cout << "\n[" << now_hms() << "] [" << sender << "] file recv: saved " << outpath
+                                                     << " (" << data.size() << " bytes)\n> ";
+                                            else
+                                                cerr << "\n[ERR] failed to save file msg_id=" << msg_id << "\n> ";
+                                        }
+                                        return;
+                                    }
+                                    {
+                                        string sender = mac_to_string(src_mac);
+                                        if (auto pi = peers.get_by_mac(src_mac))
+                                            if (!pi->alias.empty()) sender = pi->alias;
+                                        cout << "\n[" << now_hms() << "] [" << sender << "] "
+                                             << string(data.begin(), data.end()) << "\n> ";
+                                    } });
+
+            AppEthHandle handle{};
+            if (!bind_app_to_eth(app, ecfg, handle))
+            {
+                cerr << "[ERR] bind failed (eth init / RX thread)\n";
+                continue;
+            }
+
+            cout << "[groupchat] connected. Type messages, /sendfile <path> to send file, /quit to exit.\n";
+
+            thread tick_thr([&]()
+                            {
+                while (g_running.load()) { app.tick(); this_thread::sleep_for(10ms); } });
+
+            // Periodic HELLO broadcast (fire-and-forget)
+            atomic<bool> disc_run{true};
+            auto build_single_pdu = [&](Type t, const vector<uint8_t>& payload){
+                Header h{}; h.type=t; h.msg_id=0; h.seq=0; h.total=1; h.payload_len=static_cast<uint16_t>(payload.size());
+                vector<uint8_t> pdu(kHeaderSize + payload.size() + kCrcSize);
+                size_t n = build_pdu(h, payload.data(), payload.size(), pdu.data(), pdu.size());
+                if (n != pdu.size()) return vector<uint8_t>{};
+                return pdu;
+            };
+            thread disc_thr([&]()
+                            {
+                const auto period = chrono::seconds(5);
+                const string my_mac_ascii = get_local_mac_ascii(cfg.ifname);
+                while (disc_run.load())
+                {
+                    auto payload = build_hello_payload(cfg.alias, my_mac_ascii);
+                    auto pdu = build_single_pdu(Type::HELLO, payload);
+                    if (!pdu.empty()) { Mac bcast{}; fill(std::begin(bcast.bytes), std::end(bcast.bytes), 0xFF); (void)eth_send_pdu_to(bcast, pdu); }
+                    for (int i = 0; i < 50 && disc_run.load(); ++i)
+                        this_thread::sleep_for(chrono::milliseconds(period.count()*20)); // ~5s total
+                }
+            });
+
+            // Group recipients (MAC ascii). If empty => send to all online by default
+            unordered_set<string> group_macs;
+
+            string msg;
+            while (getline(cin, msg))
+            {
+                if (msg == "/quit") break;
+
+                if (msg.rfind("/members", 0) == 0)
+                {
+                    string rest = msg.substr(string("/members").size());
+                    while (!rest.empty() && isspace(static_cast<unsigned char>(rest.front()))) rest.erase(rest.begin());
+                    stringstream ss2(rest);
+                    string sub; ss2 >> sub;
+                    if (sub.empty() || sub == "list")
+                    {
+                        cout << "[members]" << (group_macs.empty()?" (using all online by default)":"") << "\n";
+                        auto list = peers.list_all();
+                        auto now = chrono::steady_clock::now();
+                        int idx = 1;
+                        for (const auto &p : list)
+                        {
+                            bool in_group = (group_macs.find(p.mac_ascii) != group_macs.end());
+                            bool online = (now - p.last_seen <= chrono::seconds(30));
+                            cout << "  " << idx++ << ") alias=" << (p.alias.empty()?"(anon)":p.alias)
+                                 << " mac=" << p.mac_ascii
+                                 << " status=" << (online?"online":"offline")
+                                 << (in_group?" [member]":"") << "\n";
+                        }
+                        cout << "> ";
+                        continue;
+                    }
+                    if (sub == "add")
+                    {
+                        string alias; ss2 >> std::ws; getline(ss2, alias);
+                        if (alias.empty()) { cerr << "Usage: /members add <alias>\n> "; continue; }
+                        auto best = peers.latest_by_alias(alias);
+                        if (!best) { cerr << "[ERR] alias not found: " << alias << "\n> "; continue; }
+                        group_macs.insert(best->mac_ascii);
+                        cout << "[members] added alias='" << (best->alias.empty()?"(anon)":best->alias) << "' mac=" << best->mac_ascii << "\n> ";
+                        continue;
+                    }
+                    if (sub == "del")
+                    {
+                        string token; ss2 >> std::ws; getline(ss2, token);
+                        if (token.empty()) { cerr << "Usage: /members del <alias|mac>\n> "; continue; }
+                        bool removed = false;
+                        // try mac exact
+                        if (group_macs.erase(token) > 0) removed = true;
+                        // try by alias (remove any matches)
+                        auto all = peers.list_all();
+                        for (const auto &p : all)
+                        {
+                            if (p.alias == token)
+                                removed = (group_macs.erase(p.mac_ascii) > 0) || removed;
+                        }
+                        if (removed) cout << "[members] removed '" << token << "'\n> "; else cerr << "[ERR] not in members: '" << token << "'\n> ";
+                        continue;
+                    }
+                    if (sub == "clear")
+                    {
+                        group_macs.clear();
+                        cout << "[members] cleared (now using all online by default)\n> ";
+                        continue;
+                    }
+                    cerr << "Usage: /members list | add <alias> | del <alias|mac> | clear\n> ";
+                    continue;
+                }
+
+                if (msg == "/online")
+                {
+                    auto list = peers.list_online();
+                    cout << "[online] peers: " << list.size() << "\n";
+                    auto now = chrono::steady_clock::now();
+                    int idx = 1;
+                    for (const auto &p : list)
+                    {
+                        auto age = chrono::duration_cast<chrono::seconds>(now - p.last_seen).count();
+                        cout << "  " << idx++ << ") alias=" << (p.alias.empty()?"(anon)":p.alias)
+                             << " mac=" << p.mac_ascii
+                             << " last=" << age << "s ago\n";
+                    }
+                    cout << "> ";
+                    continue;
+                }
+
+                if (msg == "/contacts")
+                {
+                    auto list = peers.list_all();
+                    cout << "[contacts] total: " << list.size() << "\n";
+                    auto now = chrono::steady_clock::now();
+                    int idx = 1;
+                    for (const auto &p : list)
+                    {
+                        bool online = (now - p.last_seen <= chrono::seconds(30));
+                        cout << "  " << idx++ << ") alias=" << (p.alias.empty()?"(anon)":p.alias)
+                             << " mac=" << p.mac_ascii
+                             << " status=" << (online?"online":"offline") << "\n";
+                    }
+                    cout << "> ";
+                    continue;
+                }
 
                 if (msg.rfind("/sendfile ", 0) == 0)
                 {
@@ -472,64 +888,43 @@ int run_cli()
                         continue;
                     }
                     auto wrapped = wrap_file_with_name(path, bytes);
-                    app.send_bytes(wrapped, Type::FILE);
-                    cout << "[file sent] " << fs::path(path).filename().string()
-                         << " (" << bytes.size() << " bytes)\n> ";
-                    continue;
-                }
-
-                if (msg.rfind("/all ", 0) == 0)
-                {
-                    string text = msg.substr(5);
-                    vector<uint8_t> bytes(text.begin(), text.end());
-
-                    auto prev_emit = app.get_emit_pdu(); // si no tienes get_emit_pdu(), ver nota abajo
-
-                    linkchat::Mac bcast{};
-                    fill(begin(bcast.bytes), end(bcast.bytes), 0xFF);
-
-                    app.set_emit_pdu([&](const vector<uint8_t> &pdu)
-                                     {
-                                         (void)eth_send_pdu_to(bcast, pdu); 
-                                     });
-
-                    app.send_bytes(bytes, linkchat::Type::MSG);
-
-                    auto until = chrono::steady_clock::now() + chrono::milliseconds(600);
-                    while (chrono::steady_clock::now() < until)
-                    {
-                        app.tick();
-                        this_thread::sleep_for(chrono::milliseconds(10));
-                    }
-
-                    app.set_emit_pdu(prev_emit);
-
-                    cout << "[broadcast] sent (" << bytes.size() << " bytes)\n> ";
-                    continue;
-                }
-
-                if (msg.rfind("/allfile ", 0) == 0)
-                {
-                    string path = msg.substr(string("/allfile ").size());
-                    if (broadcast_send_file(cfg, path))
-                    {
-                        cout << "[broadcast file] sent " << fs::path(path).filename().string() << "\n> ";
-                    }
+                    auto on = peers.list_online();
+                    vector<PeerInfo> targets;
+                    if (group_macs.empty())
+                        targets = move(on);
                     else
                     {
-                        cerr << "[ERR] broadcast file failed\n> ";
+                        for (const auto &p : on)
+                            if (group_macs.find(p.mac_ascii) != group_macs.end()) targets.push_back(p);
                     }
+                    if (targets.empty()) { cerr << "[ERR] no online members. Try later.\n> "; continue; }
+                    for (const auto &p : targets)
+                        app.send_bytes_to(p.mac, wrapped, Type::FILE);
+                    cout << "[file sent] " << fs::path(path).filename().string() << " to " << targets.size() << " member(s)\n> ";
                     continue;
                 }
 
+                // send text to all online
+                auto on = peers.list_online();
+                vector<PeerInfo> targets;
+                if (group_macs.empty())
+                    targets = move(on);
+                else
+                {
+                    for (const auto &p : on)
+                        if (group_macs.find(p.mac_ascii) != group_macs.end()) targets.push_back(p);
+                }
+                if (targets.empty()) { cerr << "[ERR] no online members. Try later.\n> "; continue; }
                 vector<uint8_t> bytes(msg.begin(), msg.end());
-                app.send_bytes(bytes, Type::MSG);
+                for (const auto &p : targets)
+                    app.send_bytes_to(p.mac, bytes, Type::MSG);
                 cout << "> ";
             }
 
             g_running.store(false);
-            if (tick_thr.joinable())
-                tick_thr.join();
+            if (tick_thr.joinable()) tick_thr.join();
+            disc_run.store(false);
+            if (disc_thr.joinable()) disc_thr.join();
             unbind_app_from_eth(handle);
             g_running.store(true);
             continue;
@@ -581,7 +976,7 @@ int run_cli()
                 continue;
             }
             auto wrapped = wrap_file_with_name(path, bytes);
-            app.send_bytes(wrapped, Type::FILE);
+            app.send_bytes_to(ecfg.dst_mac, wrapped, Type::FILE);
             cout << "[file sent] " << fs::path(path).filename().string() << " (" << bytes.size() << " bytes)\n";
 
             auto until = chrono::steady_clock::now() + 1500ms;
@@ -639,14 +1034,29 @@ int run_cli()
             // build HELLO with alias and real local MAC in ascii
             string my_mac_ascii = get_local_mac_ascii(cfg.ifname);
             auto payload = build_hello_payload(cfg.alias, my_mac_ascii);
-            app.send_bytes(payload, Type::HELLO);
+            // send one-shot HELLO via broadcast (no reliable sender)
+            auto build_single_pdu = [&](linkchat::Type t, const vector<uint8_t>& pl){
+                linkchat::Header h{}; h.type=t; h.msg_id=0; h.seq=0; h.total=1; h.payload_len=static_cast<uint16_t>(pl.size());
+                vector<uint8_t> pdu(linkchat::kHeaderSize + pl.size() + linkchat::kCrcSize);
+                size_t n = linkchat::build_pdu(h, pl.data(), pl.size(), pdu.data(), pdu.size());
+                if (n != pdu.size()) return vector<uint8_t>{};
+                return pdu;
+            };
+            {
+                linkchat::Mac bcast{}; fill(std::begin(bcast.bytes), std::end(bcast.bytes), 0xFF);
+                auto pdu = build_single_pdu(linkchat::Type::HELLO, payload);
+                if (!pdu.empty()) (void)linkchat::eth_send_pdu_to(bcast, pdu);
+            }
 
             cout << "[discover] HELLO broadcast sent (nick=" << cfg.alias
                  << ", mac=" << (my_mac_ascii.empty() ? "unknown" : my_mac_ascii) << "). Listening 10s...\n";
             auto end = chrono::steady_clock::now() + chrono::seconds(10);
             while (chrono::steady_clock::now() < end)
             {
-                app.send_hello(cfg.alias);
+                // periodically re-announce to catch late listeners
+                linkchat::Mac bcast{}; fill(std::begin(bcast.bytes), std::end(bcast.bytes), 0xFF);
+                auto pdu = build_single_pdu(linkchat::Type::HELLO, payload);
+                if (!pdu.empty()) (void)linkchat::eth_send_pdu_to(bcast, pdu);
                 for (int i = 0; i < 100; i++)
                 {
                     app.tick();

@@ -16,6 +16,8 @@ namespace linkchat
 
         app.set_emit_pdu([](const vector<uint8_t> &pdu)
                          { eth_send_pdu(pdu); });
+        app.set_emit_pdu_to([](const Mac& dst, const vector<uint8_t>& pdu)
+                            { (void)eth_send_pdu_to(dst, pdu); });
 
         out.running = true;
         out.rx_thread = thread([&app, &out]

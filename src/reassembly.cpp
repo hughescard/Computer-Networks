@@ -147,7 +147,7 @@ namespace linkchat
             return false;
         
         size_t total_bytes = 0;
-        for (uint8_t chunk = 0; chunk < msgs_[msg_id].total; chunk++)
+        for (uint32_t chunk = 0; chunk < msgs_[msg_id].total; chunk++)
         {
             total_bytes += msgs_[msg_id].chunks[chunk].size();
         }
